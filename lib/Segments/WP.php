@@ -133,20 +133,23 @@ class WP {
   private static function insertSubscribers() {
     global $wpdb;
     $subscribers_table = Subscriber::$_table;
+    $blog_id = get_current_blog_id();
 
     $inserterd_user_ids = \ORM::for_table($wpdb->users)->raw_query(sprintf(
       'SELECT %2$s.id, %2$s.user_email as email FROM %2$s
         LEFT JOIN %1$s AS mps ON mps.wp_user_id = %2$s.id
+        JOIN %3$s as usermeta ON %2$s.id=usermeta.user_id AND usermeta.meta_key = "wp_'.$blog_id.'_capabilities"
         WHERE mps.wp_user_id IS NULL AND %2$s.user_email != ""
-      ', $subscribers_table, $wpdb->users))->findArray();
+      ', $subscribers_table, $wpdb->users, $wpdb->usermeta))->findArray();
 
     Subscriber::rawExecute(sprintf( '
       INSERT IGNORE INTO %1$s(wp_user_id, email, status, created_at, source)
         SELECT wu.id, wu.user_email, "%4$s", CURRENT_TIMESTAMP(), "%3$s" FROM %2$s wu
           LEFT JOIN %1$s mps ON wu.id = mps.wp_user_id
+          JOIN %5$s ON wu.id=%5$s.user_id AND %5$s.meta_key = "wp_'.$blog_id.'_capabilities"
           WHERE mps.wp_user_id IS NULL AND wu.user_email != ""
       ON DUPLICATE KEY UPDATE wp_user_id = wu.id
-    ', $subscribers_table, $wpdb->users, Source::WORDPRESS_USER, Subscriber::STATUS_UNCONFIRMED));
+    ', $subscribers_table, $wpdb->users, Source::WORDPRESS_USER, Subscriber::STATUS_UNCONFIRMED, $wpdb->usermeta));
 
     return $inserterd_user_ids;
   }
@@ -213,12 +216,13 @@ class WP {
     // remove orphaned wp segment subscribers (not having a matching wp user id),
     // e.g. if wp users were deleted directly from the database
     global $wpdb;
+    $blog_id = get_current_blog_id();
 
     $wp_segment = Segment::getWPSegment();
 
     $wp_segment->subscribers()
       ->leftOuterJoin($wpdb->users, [MP_SUBSCRIBERS_TABLE . '.wp_user_id', '=', 'wu.id'], 'wu')
-      ->whereRaw('(wu.id IS NULL OR ' . MP_SUBSCRIBERS_TABLE . '.email = "")')
+      ->whereRaw('(wu.id IS NULL OR ' . MP_SUBSCRIBERS_TABLE . '.email = "") AND wu.id in (SELECT user_id from '.$wpdb->usermeta.' where meta_key = "wp_'.$blog_id.'_capabilities")')
       ->findResultSet()
       ->set('wp_user_id', null)
       ->delete();
